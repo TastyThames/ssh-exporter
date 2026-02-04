@@ -1,0 +1,10 @@
+[
+  {
+    "targets": ["127.0.0.1:9222"],
+    "labels": {
+      "job": "ssh_agentless_exporter",
+      "instance": "obs-1",
+      "role": "monitoring"
+    }
+  }
+]

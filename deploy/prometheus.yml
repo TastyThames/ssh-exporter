@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "ssh_agentless_exporter"
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/targets.json
