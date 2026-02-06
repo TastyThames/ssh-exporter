@@ -1,49 +1,100 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/tastythames/ssh-exporter/internal/cache"
 	"github.com/tastythames/ssh-exporter/internal/inventory"
-	)
+	"github.com/tastythames/ssh-exporter/internal/metrics"
+	"github.com/tastythames/ssh-exporter/internal/scheduler"
+)
 
-
-func getenv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
+func getenv(k, fb string) string {
+	if v := os.Getenv(k); v != "" {
 		return v
 	}
-	return fallback
+	return fb
 }
 
 func main() {
 	listen := getenv("EXPORTER_LISTEN", ":9222")
-	invPath := getenv("INVENTORY_PATH", "deploy/targets.yaml")
+	invPath := getenv("INVENTORY_FILE", "deploy/targets.yaml")
 
+	// 1) load inventory
 	inv, err := inventory.Load(invPath)
 	if err != nil {
-		log.Fatalf("inventory load failed: %v", err)
-	}
-	targets, err := inv.Normalize()
-	if err != nil {
-		log.Fatalf("inventory normalize failed: %v", err)
-	}
-	log.Printf("inventory loaded: %d targets from %s", len(targets), invPath)
-	for _, t := range targets {
-		log.Printf("target: name=%s addr=%s mode=%s labels=%v", t.Name, t.Address, t.Mode, t.Labels)
+		log.Fatalf("load inventory: %v", err)
 	}
 
+	jobs := make([]scheduler.Job, 0, len(inv.Targets))
+	for _, t := range inv.Targets {
+		jobs = append(jobs, scheduler.Job{
+			Target: t.Address,
+			Labels: t.Labels,
+		})
+	}
+
+	// 2) cache + scheduler
+	c := cache.NewMemCache()
+
+	jobCh := make(chan scheduler.Job, 100) // buffer สำคัญมาก
+	sched := scheduler.NewScheduler(scheduler.Options{
+		Interval: 10 * time.Second,
+		Jitter:   2 * time.Second,
+		JobCh:    jobCh,
+	})
+
+	// worker pool size
+	workers := 5
+	for i := 0; i < workers; i++ {
+		go scheduler.StartWorker(i, jobCh, c)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sched.Run(ctx, jobs)
+
+	// 3) HTTP
+	r := metrics.NewRenderer(c)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
 
-	// NOTE: /metrics will be added next (with client_golang registry)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/health", http.StatusFound)
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		r.Write(w)
 	})
 
-	log.Printf("ssh-agentless-exporter listening on %s", listen)
-	log.Fatal(http.ListenAndServe(listen, mux))
+	srv := &http.Server{
+		Addr:    listen,
+		Handler: mux,
+	}
+
+	// graceful shutdown
+	go func() {
+		log.Printf("ssh-exporter listening on %s\n", listen)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	<-ch
+	log.Println("shutdown...")
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	_ = srv.Shutdown(shutdownCtx)
 }

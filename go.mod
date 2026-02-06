@@ -1,5 +1,12 @@
 module github.com/tastythames/ssh-exporter
 
-go 1.22.2
+go 1.24.0
 
-require gopkg.in/yaml.v3 v3.0.1
+toolchain go1.24.13
+
+require (
+	golang.org/x/crypto v0.47.0
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require golang.org/x/sys v0.40.0 // indirect

@@ -120,4 +120,3 @@ func (inv *Inventory) Normalize() ([]NormalizedTarget, error) {
 
 	return out, nil
 }
-
