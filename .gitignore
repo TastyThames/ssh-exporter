@@ -44,3 +44,14 @@ deploy/file_sd/targets.json
 deploy/keys/
 *.pem
 *.key
+
+# local inventory (env-specific)
+deploy/targets.yaml
+
+# generated file_sd output
+deploy/file_sd/targets.json
+
+# ssh keys / secrets
+deploy/keys/
+*.pem
+*.key
