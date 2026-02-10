@@ -4,11 +4,21 @@ targets:
   - name: ecs-1
     address: 192.168.0.102
     mode: ssh
+    ssh:
+      user: root
+      auth:
+        mode: password_env
+        password_env: SSH_PASS_ECS1
     labels:
       role: web
 
   - name: redis-1
     address: 192.168.0.113
     mode: ssh
+    ssh:
+      user: root
+      auth:
+        mode: password_env
+        password_env: SSH_PASS_REDIS1
     labels:
       role: redis

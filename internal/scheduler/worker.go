@@ -3,11 +3,12 @@ package scheduler
 import (
 	"context"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tastythames/ssh-exporter/internal/cache"
-	"github.com/tastythames/ssh-exporter/internal/metrics"
 	"github.com/tastythames/ssh-exporter/internal/sshclient"
 )
 
@@ -22,76 +23,85 @@ func StartWorker(id int, jobs <-chan Job, c cache.Cache) {
 	}
 
 	for job := range jobs {
-		log.Printf("worker %d got job: target=%s labels=%v", id, job.Target, job.Labels)
-
-		start := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-		defer cancel() // NOTE: จะถูกเรียกเมื่อจบ iteration นี้ (เพราะเราจะ `continue` บ่อย) -> ใช้แบบ explicit ดีกว่า
-		// ⚠️ ใน Go ถ้าใช้ defer ใน loop จะสะสม; เราจะใช้ cancel แบบ explicit ด้านล่างแทน
-
 		host := strings.TrimSpace(job.Target)
 
-		// สร้าง result โครงไว้ก่อน (duration ค่อย set ทีหลัง)
-		result := cache.Result{
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+		start := time.Now()
+
+		res := cache.Result{
 			At:     time.Now(),
 			Labels: job.Labels,
 			Values: map[string]float64{
-				metrics.MetricTargetUp:     0, // default fail
-				metrics.MetricLastScrapeTs: float64(time.Now().Unix()),
+				"ssh_target_scrape_duration_seconds":       0,
+				"ssh_target_last_scrape_timestamp_seconds": float64(time.Now().Unix()),
+				"ssh_target_up": 0,
 			},
 		}
 
-		// (แก้ defer สะสม) ใช้ cancel แบบ explicit
-		cancelNow := func() {
+		// only support password_env ตอนนี้
+		if job.AuthMode != "" && job.AuthMode != "password_env" {
+			res.Err = &ErrString{S: "unsupported auth mode: " + job.AuthMode}
+			res.Values["ssh_target_scrape_duration_seconds"] = time.Since(start).Seconds()
 			cancel()
-		}
-
-		// 1) uptime (ถือเป็น "primary check" ถ้าพังถือว่า target down)
-		out, e := cli.Run(ctx, host, sshclient.CmdUptime())
-		if e != nil {
-			result.Err = e
-			result.Values[metrics.MetricTargetUp] = 0
-			result.Values[metrics.MetricScrapeDuration] = time.Since(start).Seconds()
-			cancelNow()
-			c.Set(job.Target, result)
+			c.Set(job.Target, res)
 			continue
 		}
 
-		up, e := sshclient.ParseUptimeSeconds(out)
-		if e != nil {
-			result.Err = e
-			result.Values[metrics.MetricTargetUp] = 0
-			result.Values[metrics.MetricScrapeDuration] = time.Since(start).Seconds()
-			cancelNow()
-			c.Set(job.Target, result)
+		if job.PasswordEnv == "" {
+			res.Err = &ErrString{S: "missing password_env in inventory"}
+			res.Values["ssh_target_scrape_duration_seconds"] = time.Since(start).Seconds()
+			cancel()
+			c.Set(job.Target, res)
 			continue
 		}
 
-		// uptime ผ่าน = target up
-		result.Values[metrics.MetricTargetUp] = 1
-		result.Values["ssh_os_uptime_seconds"] = up
-
-		// 2) load1 (optional)
-		out, e = cli.Run(ctx, host, sshclient.CmdLoadavg())
-		if e == nil {
-			if l1, pe := sshclient.ParseLoad1(out); pe == nil {
-				result.Values["ssh_os_load1"] = l1
-			}
+		password := os.Getenv(job.PasswordEnv)
+		if password == "" {
+			res.Err = &ErrString{S: "empty env var: " + job.PasswordEnv}
+			res.Values["ssh_target_scrape_duration_seconds"] = time.Since(start).Seconds()
+			cancel()
+			c.Set(job.Target, res)
+			continue
 		}
 
-		// 3) meminfo (optional)
-		out, e = cli.Run(ctx, host, sshclient.CmdMeminfo())
-		if e == nil {
-			if total, avail, pe := sshclient.ParseMeminfo(out); pe == nil {
-				result.Values["ssh_os_mem_total_bytes"] = total
-				result.Values["ssh_os_mem_available_bytes"] = avail
-			}
+		// command: uptime seconds
+		out, e := cli.RunPassword(ctx, host, job.SSHUser, password, "cat /proc/uptime")
+		cancel()
+
+		res.Values["ssh_target_scrape_duration_seconds"] = time.Since(start).Seconds()
+
+		if e != nil {
+			res.Err = e
+			res.Values["ssh_target_up"] = 0
+			c.Set(job.Target, res)
+			continue
 		}
 
-		// duration สุดท้าย
-		result.Values[metrics.MetricScrapeDuration] = time.Since(start).Seconds()
+		// parse uptime: "<seconds> <idle>\n"
+		// minimal parse (ปล่อย robust ทีหลัง)
+		secs := parseFirstFloat(out)
+		res.Values["ssh_target_up"] = 1
+		res.Values["ssh_os_uptime_seconds"] = secs
 
-		cancelNow()
-		c.Set(job.Target, result)
+		c.Set(job.Target, res)
 	}
+}
+
+// ---- tiny helpers ----
+
+type ErrString struct{ S string }
+
+func (e *ErrString) Error() string { return e.S }
+
+func parseFirstFloat(s string) float64 {
+	// very small parser: split by space, parse first token
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }

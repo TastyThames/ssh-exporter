@@ -37,6 +37,11 @@ func main() {
 		jobs = append(jobs, scheduler.Job{
 			Target: t.Address,
 			Labels: t.Labels,
+
+			SSHUser:     t.SSH.User,
+			AuthMode:    t.SSH.Auth.Mode,
+			PasswordEnv: t.SSH.Auth.PasswordEnv,
+			KeyPath:     t.SSH.Auth.KeyPath,
 		})
 	}
 

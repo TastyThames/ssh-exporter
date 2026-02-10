@@ -25,27 +25,30 @@ func (r *Renderer) Write(w io.Writer) {
 	// ---------------------------------------------------
 	// Exporter-level metrics
 	// ---------------------------------------------------
-	fmt.Fprintln(w, "# HELP ssh_exporter_up 1 if exporter process is running.")
-	fmt.Fprintln(w, "# TYPE ssh_exporter_up gauge")
+	fmt.Fprintf(w, "# HELP %s 1 if exporter process is running.\n", MetricExporterUp)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricExporterUp)
 	fmt.Fprintf(w, "%s 1\n", MetricExporterUp)
 
-	fmt.Fprintln(w, "# HELP ssh_exporter_render_duration_seconds Time spent rendering /metrics.")
-	fmt.Fprintln(w, "# TYPE ssh_exporter_render_duration_seconds gauge")
+	fmt.Fprintf(w, "# HELP %s Time spent rendering /metrics.\n", MetricRenderDurationSeconds)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricRenderDurationSeconds)
 
 	// ---------------------------------------------------
 	// Target metrics (headers)
 	// ---------------------------------------------------
-	fmt.Fprintln(w, "# HELP ssh_target_up 1 if last SSH scrape succeeded.")
-	fmt.Fprintln(w, "# TYPE ssh_target_up gauge")
+	fmt.Fprintf(w, "# HELP %s 1 if last SSH scrape succeeded.\n", MetricTargetUp)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricTargetUp)
 
-	fmt.Fprintln(w, "# HELP ssh_target_scrape_cache_age_seconds Age of cached result per target.")
-	fmt.Fprintln(w, "# TYPE ssh_target_scrape_cache_age_seconds gauge")
+	fmt.Fprintf(w, "# HELP %s Age of cached result per target.\n", MetricCacheAgeSeconds)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricCacheAgeSeconds)
 
-	fmt.Fprintln(w, "# HELP ssh_target_scrape_duration_seconds Duration of SSH scrape.")
-	fmt.Fprintln(w, "# TYPE ssh_target_scrape_duration_seconds gauge")
+	fmt.Fprintf(w, "# HELP %s Duration of SSH scrape.\n", MetricScrapeDuration)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricScrapeDuration)
 
-	fmt.Fprintln(w, "# HELP ssh_target_last_scrape_timestamp_seconds Unix timestamp of last scrape.")
-	fmt.Fprintln(w, "# TYPE ssh_target_last_scrape_timestamp_seconds gauge")
+	fmt.Fprintf(w, "# HELP %s Unix timestamp of last scrape.\n", MetricLastScrapeTs)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricLastScrapeTs)
+
+	fmt.Fprintf(w, "# HELP %s 1 if last scrape returned error.\n", MetricTargetError)
+	fmt.Fprintf(w, "# TYPE %s gauge\n", MetricTargetError)
 
 	// ---------------------------------------------------
 	// Snapshot cache
@@ -61,39 +64,38 @@ func (r *Renderer) Write(w io.Writer) {
 	for _, t := range targets {
 		res := snap[t]
 
-		labels := map[string]string{
-			"target": t,
-		}
+		labels := map[string]string{"target": t}
 		for k, v := range res.Labels {
 			labels[k] = v
 		}
 
 		// cache age
 		age := now.Sub(res.At).Seconds()
-		fmt.Fprintf(w, "ssh_target_scrape_cache_age_seconds%s %.3f\n",
-			formatLabels(labels), age)
+		fmt.Fprintf(w, "%s%s %.3f\n", MetricCacheAgeSeconds, formatLabels(labels), age)
 
-		// up metric
+		// up + error
 		up := 1.0
+		errFlag := 0.0
 		if res.Err != nil {
 			up = 0
+			errFlag = 1
 		}
-		fmt.Fprintf(w, "%s%s %.0f\n",
-			MetricTargetUp, formatLabels(labels), up)
+		fmt.Fprintf(w, "%s%s %.0f\n", MetricTargetUp, formatLabels(labels), up)
+		fmt.Fprintf(w, "%s%s %.0f\n", MetricTargetError, formatLabels(labels), errFlag)
 
 		// extra values from worker
 		for name, val := range res.Values {
-			if name == MetricTargetUp || name == MetricExporterUp {
+			// avoid duplicates + avoid exporter-level metrics
+			if name == MetricTargetUp || name == MetricExporterUp || name == MetricTargetError {
 				continue
 			}
-			fmt.Fprintf(w, "%s%s %v\n",
-				name, formatLabels(labels), val)
+			fmt.Fprintf(w, "%s%s %v\n", name, formatLabels(labels), val)
 		}
 	}
 
 	// render duration
 	dur := time.Since(start).Seconds()
-	fmt.Fprintf(w, "ssh_exporter_render_duration_seconds %.6f\n", dur)
+	fmt.Fprintf(w, "%s %.6f\n", MetricRenderDurationSeconds, dur)
 }
 
 func formatLabels(m map[string]string) string {
@@ -112,6 +114,7 @@ func formatLabels(m map[string]string) string {
 		if i > 0 {
 			b.WriteString(",")
 		}
+		// NOTE: keep simple (labels should not contain quotes in this lab)
 		fmt.Fprintf(&b, `%s="%s"`, k, m[k])
 	}
 	b.WriteString("}")
