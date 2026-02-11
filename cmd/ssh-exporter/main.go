@@ -24,9 +24,11 @@ func getenv(k, fb string) string {
 
 func main() {
 	listen := getenv("EXPORTER_LISTEN", ":9222")
-	invPath := getenv("INVENTORY_FILE", "deploy/targets.yaml")
 
-	// 1) load inventory
+	invPath := getenv("INVENTORY_FILE", "deploy/targets.example.yaml")
+
+	log.Printf("config: listen=%s inventory=%s", listen, invPath)
+
 	inv, err := inventory.Load(invPath)
 	if err != nil {
 		log.Fatalf("load inventory: %v", err)
@@ -38,10 +40,13 @@ func main() {
 			Target: t.Address,
 			Labels: t.Labels,
 
-			SSHUser:     t.SSH.User,
-			AuthMode:    t.SSH.Auth.Mode,
-			PasswordEnv: t.SSH.Auth.PasswordEnv,
-			KeyPath:     t.SSH.Auth.KeyPath,
+			SSHUser: t.SSH.User,
+
+			AuthMode:     t.SSH.Auth.Mode,
+			PasswordEnv:  t.SSH.Auth.PasswordEnv,
+			PasswordFile: t.SSH.Auth.PasswordFile,
+
+			KeyPath: t.SSH.Auth.KeyPath,
 		})
 	}
 
@@ -73,7 +78,6 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
-
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		r.Write(w)
@@ -84,7 +88,6 @@ func main() {
 		Handler: mux,
 	}
 
-	// graceful shutdown
 	go func() {
 		log.Printf("ssh-exporter listening on %s\n", listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
